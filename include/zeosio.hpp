@@ -9,6 +9,24 @@
 using namespace std;
 using namespace eosio;
 
+#ifndef THEZEOSTOKEN_HEADER_FILE
+CONTRACT thezeostoken : public contract
+{
+    public:
+
+    thezeostoken(name self,
+                 name code,
+                 datastream<const char *> ds);
+
+    ACTION verifyproof(const string& type,
+                       const name& code,
+                       const name& id,
+                       const string& proof,
+                       const string& inputs);
+    using verifyproof_action = action_wrapper<"verifyproof"_n, &thezeostoken::verifyproof>;
+};
+#endif
+
 namespace zeos
 {
     namespace groth16
