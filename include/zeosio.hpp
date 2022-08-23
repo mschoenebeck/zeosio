@@ -7,6 +7,7 @@
 #include "blake2s.h"
 
 using namespace std;
+using namespace eosio;
 
 namespace zeos
 {
