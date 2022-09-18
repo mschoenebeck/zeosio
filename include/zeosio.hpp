@@ -9,49 +9,48 @@
 using namespace std;
 using namespace eosio;
 
-#ifndef THEZEOSTOKEN_HEADER_FILE
-CONTRACT thezeostoken : public contract
+namespace zeosio
 {
-    public:
+    // helper from zeos-bellman/inc/groth16/bls12_381/util.hpp needed by Scalar
+    // also used for halo2 fp operations
+    /// Compute a + b + carry, returning the result and the new carry over.
+    tuple<uint64_t, uint64_t> adc(uint64_t a, uint64_t b, uint64_t carry)
+    {
+        uint128_t ret = (uint128_t)a + (uint128_t)b + (uint128_t)carry;
+        return tuple<uint64_t, uint64_t>{(uint64_t)ret, (uint64_t)(ret >> 64)};
+    }
+    /// Compute a - (b + borrow), returning the result and the new borrow.
+    tuple<uint64_t, uint64_t> sbb(uint64_t a, uint64_t b, uint64_t borrow)
+    {
+        uint128_t ret = (uint128_t)a - ((uint128_t)b + (uint128_t)(borrow >> 63));
+        return tuple<uint64_t, uint64_t>{(uint64_t)ret, (uint64_t)(ret >> 64)};
+    }
+    /// Compute a + (b * c) + carry, returning the result and the new carry over.
+    tuple<uint64_t, uint64_t> mac(uint64_t a, uint64_t b, uint64_t c, uint64_t carry)
+    {
+        uint128_t ret = (uint128_t)a + ((uint128_t)b * (uint128_t)c) + (uint128_t)carry;
+        return tuple<uint64_t, uint64_t>{(uint64_t)ret, (uint64_t)(ret >> 64)};
+    }
+    
+    // from: https://stackoverflow.com/a/47526992/2340535
+    template<size_t n> string byte2str(const uint8_t* src)
+    {
+        static const char table[] = "0123456789ABCDEF";
+        char dst[2 * n + 1];
+        const uint8_t* srcPtr = src;
+        char* dstPtr = dst;
+        for(auto count = n; count > 0; --count)
+        {
+            unsigned char c = *srcPtr++;
+            *dstPtr++ = table[c >> 4];
+            *dstPtr++ = table[c & 0x0f];
+        }
+        *dstPtr = 0;
+        return &dst[0];
+    }
 
-    thezeostoken(name self,
-                 name code,
-                 datastream<const char *> ds);
-
-    ACTION verifyproof(const string& type,
-                       const name& code,
-                       const name& id,
-                       const string& proof,
-                       const string& inputs);
-    using verifyproof_action = action_wrapper<"verifyproof"_n, &thezeostoken::verifyproof>;
-};
-#endif
-
-namespace zeos
-{
     namespace groth16
     {
-
-        // helper from zeos-bellman/inc/groth16/bls12_381/util.hpp needed by Scalar
-        /// Compute a + b + carry, returning the result and the new carry over.
-        tuple<uint64_t, uint64_t> adc(uint64_t a, uint64_t b, uint64_t carry)
-        {
-            uint128_t ret = (uint128_t)a + (uint128_t)b + (uint128_t)carry;
-            return tuple<uint64_t, uint64_t>{(uint64_t)ret, (uint64_t)(ret >> 64)};
-        }
-        /// Compute a - (b + borrow), returning the result and the new borrow.
-        tuple<uint64_t, uint64_t> sbb(uint64_t a, uint64_t b, uint64_t borrow)
-        {
-            uint128_t ret = (uint128_t)a - ((uint128_t)b + (uint128_t)(borrow >> 63));
-            return tuple<uint64_t, uint64_t>{(uint64_t)ret, (uint64_t)(ret >> 64)};
-        }
-        /// Compute a + (b * c) + carry, returning the result and the new carry over.
-        tuple<uint64_t, uint64_t> mac(uint64_t a, uint64_t b, uint64_t c, uint64_t carry)
-        {
-            uint128_t ret = (uint128_t)a + ((uint128_t)b * (uint128_t)c) + (uint128_t)carry;
-            return tuple<uint64_t, uint64_t>{(uint64_t)ret, (uint64_t)(ret >> 64)};
-        }
-
         // copied from zeos-bellman/inc/groth16/bls12_381/scalar.hpp and cpp file to make a header
         // only implementation to be used by smart contracts to compute_multipacking of inputs on chain
         class Scalar
@@ -303,50 +302,298 @@ namespace zeos
             return res;
         }
 
-        // from: https://stackoverflow.com/a/47526992/2340535
-        // adjusted to C types
-        string BytesArrayToHexString(uint8_t* src)
-        {
-            const uint8_t n = 8;
-            static const char table[] = "0123456789ABCDEF";
-            char dst[2 * n + 1];
-            const uint8_t* srcPtr = src;
-            char* dstPtr = dst;
-            for (auto count = n; count > 0; --count)
-            {
-                unsigned char c = *srcPtr++;
-                *dstPtr++ = table[c >> 4];
-                *dstPtr++ = table[c & 0x0f];
-            }
-            *dstPtr = 0;
-            return &dst[0];
-        }
-
-        string byte2str(const uint8_t b)
-        {
-            static const char table[] = "0123456789ABCDEF";
-            char dst[3];
-            char* dstPtr = dst;
-            *dstPtr++ = table[b >> 4];
-            *dstPtr++ = table[b & 0x0f];
-            *dstPtr = 0;
-            return dst;
-        }
-
         string inputs_hexstr(const vector<Scalar>& inputs)
         {
-            string res = byte2str(inputs.size());
+            uint8_t s = inputs.size();
+            string res = byte2str<1>(&s);
 
             for(int i = 0; i < inputs.size(); i++)
             {
                 vector<unsigned char> s = inputs[i].to_bytes();
                 for(auto c = s.begin(); c != s.end(); c++)
                 {
-                    res += byte2str(*c);
+                    uint8_t b = *c;
+                    res += byte2str<1>(&b);
                 }
             }
 
             return res;
         }
     } // namespace groth16
+
+    namespace halo2
+    {
+        class Fp
+        {
+            public:
+
+            /// INV = -(p^{-1} mod 2^64) mod 2^64
+            static const uint64_t INV;
+            /// p = 0x40000000000000000000000000000000224698fc094cf91b992d30ed00000001
+            static const Fp MODULUS;
+            /// R = 2^256 mod p
+            static const Fp R;
+            /// R^2 = 2^512 mod p
+            static const Fp R2;
+
+            // members
+            vector<uint64_t> data;
+
+            Fp() : data({0, 0, 0, 0})
+            {
+            }
+            Fp(vector<uint64_t> data) : data(data)
+            {
+            }
+
+            static Fp zero()
+            {
+                return Fp({0, 0, 0, 0});
+            }
+            static Fp one()
+            {
+                return R;
+            }
+
+            static Fp from_raw(vector<uint64_t> v)
+            {
+                return Fp(v).mul(R2);
+            }
+            static Fp from_bool(const bool& bit)
+            {
+                return bit ? Fp::one() : Fp::zero();
+            }
+            static Fp from_u64(const uint64_t& val)
+            {
+                return Fp({val, 0, 0, 0}) * R2;
+            }
+
+            Fp sub(const Fp& rhs) const
+            {
+                uint64_t _, d0, d1, d2, d3, borrow, carry;
+                tie(d0, borrow) = sbb(this->data[0], rhs.data[0], 0);
+                tie(d1, borrow) = sbb(this->data[1], rhs.data[1], borrow);
+                tie(d2, borrow) = sbb(this->data[2], rhs.data[2], borrow);
+                tie(d3, borrow) = sbb(this->data[3], rhs.data[3], borrow);
+
+                // If underflow occurred on the final limb, borrow = 0xfff...fff, otherwise
+                // borrow = 0x000...000. Thus, we use it as a mask to conditionally add the modulus.
+                tie(d0, carry) = adc(d0, MODULUS.data[0] & borrow, 0);
+                tie(d1, carry) = adc(d1, MODULUS.data[1] & borrow, carry);
+                tie(d2, carry) = adc(d2, MODULUS.data[2] & borrow, carry);
+                tie(d3, _)     = adc(d3, MODULUS.data[3] & borrow, carry);
+
+                return Fp({d0, d1, d2, d3});
+            }
+            Fp mul(const Fp& rhs) const
+            {
+                // Schoolbook multiplication
+                uint64_t r0, r1, r2, r3, r4, r5, r6, r7, carry;
+                tie(r0, carry) = mac(0, this->data[0], rhs.data[0], 0);
+                tie(r1, carry) = mac(0, this->data[0], rhs.data[1], carry);
+                tie(r2, carry) = mac(0, this->data[0], rhs.data[2], carry);
+                tie(r3, r4)    = mac(0, this->data[0], rhs.data[3], carry);
+
+                tie(r1, carry) = mac(r1, this->data[1], rhs.data[0], 0);
+                tie(r2, carry) = mac(r2, this->data[1], rhs.data[1], carry);
+                tie(r3, carry) = mac(r3, this->data[1], rhs.data[2], carry);
+                tie(r4, r5)    = mac(r4, this->data[1], rhs.data[3], carry);
+
+                tie(r2, carry) = mac(r2, this->data[2], rhs.data[0], 0);
+                tie(r3, carry) = mac(r3, this->data[2], rhs.data[1], carry);
+                tie(r4, carry) = mac(r4, this->data[2], rhs.data[2], carry);
+                tie(r5, r6)    = mac(r5, this->data[2], rhs.data[3], carry);
+
+                tie(r3, carry) = mac(r3, this->data[3], rhs.data[0], 0);
+                tie(r4, carry) = mac(r4, this->data[3], rhs.data[1], carry);
+                tie(r5, carry) = mac(r5, this->data[3], rhs.data[2], carry);
+                tie(r6, r7)    = mac(r6, this->data[3], rhs.data[3], carry);
+
+                return Fp::montgomery_reduce(r0, r1, r2, r3, r4, r5, r6, r7);
+            }
+            Fp montgomery_reduce(const uint64_t& r0,
+                                 const uint64_t& r1,
+                                 const uint64_t& r2,
+                                 const uint64_t& r3,
+                                 const uint64_t& r4,
+                                 const uint64_t& r5,
+                                 const uint64_t& r6,
+                                 const uint64_t& r7) const
+            {
+                // The Montgomery reduction here is based on Algorithm 14.32 in
+                // Handbook of Applied Cryptography
+                // <http://cacr.uwaterloo.ca/hac/about/chap14.pdf>.
+
+                uint64_t _, rr0 = r0, rr1 = r1, rr2 = r2, rr3 = r3, rr4 = r4, rr5 = r5, rr6 = r6, rr7 = r7, carry, carry2;
+                uint64_t k = rr0 * INV;
+                tie(_,   carry) = mac(rr0, k, MODULUS.data[0], 0);
+                tie(rr1, carry) = mac(rr1, k, MODULUS.data[1], carry);
+                tie(rr2, carry) = mac(rr2, k, MODULUS.data[2], carry);
+                tie(rr3, carry) = mac(rr3, k, MODULUS.data[3], carry);
+                tie(rr4, carry2) = adc(rr4, 0, carry);
+
+                k = rr1 * INV;
+                tie(_,   carry) = mac(rr1, k, MODULUS.data[0], 0);
+                tie(rr2, carry) = mac(rr2, k, MODULUS.data[1], carry);
+                tie(rr3, carry) = mac(rr3, k, MODULUS.data[2], carry);
+                tie(rr4, carry) = mac(rr4, k, MODULUS.data[3], carry);
+                tie(rr5, carry2) = adc(rr5, carry2, carry);
+
+                k = rr2 * INV;
+                tie(_,   carry) = mac(rr2, k, MODULUS.data[0], 0);
+                tie(rr3, carry) = mac(rr3, k, MODULUS.data[1], carry);
+                tie(rr4, carry) = mac(rr4, k, MODULUS.data[2], carry);
+                tie(rr5, carry) = mac(rr5, k, MODULUS.data[3], carry);
+                tie(rr6, carry2) = adc(rr6, carry2, carry);
+
+                k = rr3 * INV;
+                tie(_,   carry) = mac(rr3, k, MODULUS.data[0], 0);
+                tie(rr4, carry) = mac(rr4, k, MODULUS.data[1], carry);
+                tie(rr5, carry) = mac(rr5, k, MODULUS.data[2], carry);
+                tie(rr6, carry) = mac(rr6, k, MODULUS.data[3], carry);
+                tie(rr7, _) = adc(rr7, carry2, carry);
+
+                // Result may be within MODULUS of the correct value
+                return (Fp({rr4, rr5, rr6, rr7})).sub(MODULUS);
+            };
+
+            Fp operator * (const Fp& rhs) const
+            {
+                return this->mul(rhs);
+            }
+        };
+
+        /// INV = -(p^{-1} mod 2^64) mod 2^64
+        const uint64_t Fp::INV = 0x992d30ecffffffff;
+        // R = 2^256 mod p
+        const Fp Fp::R = Fp({
+            0x34786d38fffffffd,
+            0x992c350be41914ad,
+            0xffffffffffffffff,
+            0x3fffffffffffffff,
+        });
+        // R2 = R^2 = 2^512 mod p
+        const Fp Fp::R2 = Fp({
+            0x8c78ecb30000000f,
+            0xd7d30dbd8b0de0e7,
+            0x7797a99bc3c95d18,
+            0x096d41af7b9cb714,
+        });
+        // p = 0x40000000000000000000000000000000224698fc094cf91b992d30ed00000001
+        const Fp Fp::MODULUS = Fp({
+            0x992d30ed00000001,
+            0x224698fc094cf91b,
+            0x0000000000000000,
+            0x4000000000000000,
+        });
+
+        struct instance
+        {
+            virtual vector<Fp> to_halo2_instance() const = 0;
+        };
+
+        string serialize_instances(vector<const instance*> instances)
+        {
+            string inputs = "";
+            if(instances.size() == 0)
+                return inputs;
+            vector<Fp> ins = instances[0]->to_halo2_instance();
+            uint8_t n = ins.size(); // the length of the very inner vector is the number of input field elements
+            inputs.append(byte2str<1>(&n));
+
+            for(int i = 0; i < n; i++)
+            {
+                inputs.append(byte2str<32>(reinterpret_cast<uint8_t*>(ins[i].data.data())));
+            }
+
+            for(int j = 1; j < instances.size(); j++)
+            {
+                ins = instances[j]->to_halo2_instance();
+                for(int i = 0; i < n; i++)
+                {
+                    inputs.append(byte2str<32>(reinterpret_cast<uint8_t*>(ins[i].data.data())));
+                }
+            }
+
+            return inputs;
+        }
+
+    } // namespace halo2
 } // namespace zeos
+
+using namespace zeosio;
+
+struct zinstance : halo2::instance
+{
+    checksum256 anchor;
+    checksum256 nf;
+    checksum256 rk_x;
+    checksum256 rk_y;
+    bool nft;
+    uint64_t b_d1;
+    uint64_t b_d2;
+    uint64_t b_sc;
+    uint64_t c_d1;
+    checksum256 cmb;
+    checksum256 cmc;
+
+    vector<halo2::Fp> to_halo2_instance() const
+    {
+        vector<halo2::Fp> vec;
+        //const uint64_t* d = reinterpret_cast<const uint64_t*>(anchor.data());
+        //vec.push_back(halo2::Fp({d[0], d[1], d[2], d[3]}));
+        array<uint8_t, 32UL> ba = anchor.extract_as_byte_array();
+        vec.push_back(halo2::Fp({*(uint64_t*)&ba[0], *(uint64_t*)&ba[8], *(uint64_t*)&ba[16], *(uint64_t*)&ba[24]}));
+        ba = nf.extract_as_byte_array();
+        vec.push_back(halo2::Fp({*(uint64_t*)&ba[0], *(uint64_t*)&ba[8], *(uint64_t*)&ba[16], *(uint64_t*)&ba[24]}));
+        ba = rk_x.extract_as_byte_array();
+        vec.push_back(halo2::Fp({*(uint64_t*)&ba[0], *(uint64_t*)&ba[8], *(uint64_t*)&ba[16], *(uint64_t*)&ba[24]}));
+        ba = rk_y.extract_as_byte_array();
+        vec.push_back(halo2::Fp({*(uint64_t*)&ba[0], *(uint64_t*)&ba[8], *(uint64_t*)&ba[16], *(uint64_t*)&ba[24]}));
+        vec.push_back(halo2::Fp::from_bool(nft));
+        vec.push_back(halo2::Fp::from_u64(b_d1));
+        vec.push_back(halo2::Fp::from_u64(b_d2));
+        vec.push_back(halo2::Fp::from_u64(b_sc));
+        vec.push_back(halo2::Fp::from_u64(c_d1));
+        ba = cmb.extract_as_byte_array();
+        vec.push_back(halo2::Fp({*(uint64_t*)&ba[0], *(uint64_t*)&ba[8], *(uint64_t*)&ba[16], *(uint64_t*)&ba[24]}));
+        ba = cmc.extract_as_byte_array();
+        vec.push_back(halo2::Fp({*(uint64_t*)&ba[0], *(uint64_t*)&ba[8], *(uint64_t*)&ba[16], *(uint64_t*)&ba[24]}));
+        return vec;
+    }
+
+    EOSLIB_SERIALIZE(zinstance, (anchor)(nf)(rk_x)(rk_y)(nft)(b_d1)(b_d2)(b_sc)(c_d1)(cmb)(cmc))
+};
+
+#define ZA_NULL     0x0
+#define ZA_DUMMY    0xdeadbeefdeadbeef
+
+struct zaction
+{
+    uint64_t type;
+    zinstance ins;
+    string memo;
+
+    EOSLIB_SERIALIZE(zaction, (type)(ins)(memo))
+};
+
+#ifndef THEZEOSTOKEN_HEADER_FILE
+CONTRACT thezeostoken : public contract
+{
+    public:
+
+    thezeostoken(name self,
+                 name code,
+                 datastream<const char *> ds);
+
+    ACTION verifyproof(const string& type,
+                       const name& code,
+                       const name& id,
+                       const string& proof,
+                       const string& inputs);
+    using verifyproof_action = action_wrapper<"verifyproof"_n, &thezeostoken::verifyproof>;
+
+    ACTION inlinesample(const zaction& payload);
+    using inlinesample_action = action_wrapper<"inlinesample"_n, &thezeostoken::inlinesample>;
+};
+#endif
