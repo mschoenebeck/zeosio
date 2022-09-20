@@ -565,8 +565,13 @@ struct zinstance : halo2::instance
     EOSLIB_SERIALIZE(zinstance, (anchor)(nf)(rk_x)(rk_y)(nft)(b_d1)(b_d2)(b_sc)(c_d1)(cmb)(cmc))
 };
 
-#define ZA_NULL     0x0
-#define ZA_DUMMY    0xdeadbeefdeadbeef
+// ZEOS action types
+#define ZA_DUMMY    0xDEADBEEFDEADBEEF  // dummy action that indicates zactions to be validated/executed
+#define ZA_NULL     0x0                 // NULL OP - do nothing (verify proof only)
+#define ZA_         0x1                 // ... TODO
+
+// size of zinstances in num of bytes
+#define ZI_SIZE         (32 + 32 + 32 + 32 + 1 + 8 + 8 + 8 + 8 + 32 + 32)
 
 struct zaction
 {
@@ -592,8 +597,5 @@ CONTRACT thezeostoken : public contract
                        const string& proof,
                        const string& inputs);
     using verifyproof_action = action_wrapper<"verifyproof"_n, &thezeostoken::verifyproof>;
-
-    ACTION inlinesample(const zaction& payload);
-    using inlinesample_action = action_wrapper<"inlinesample"_n, &thezeostoken::inlinesample>;
 };
 #endif
