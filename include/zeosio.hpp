@@ -5,6 +5,7 @@
 #include <array>
 #include <eosio/eosio.hpp>
 #include "blake2s.h"
+#include "sinsemilla_s.h"
 
 using namespace std;
 using namespace eosio;
@@ -337,12 +338,12 @@ namespace zeosio
             static const Fp R2;
 
             // members
-            vector<uint64_t> data;
+            array<uint64_t, 4UL> data;
 
             Fp() : data({0, 0, 0, 0})
             {
             }
-            Fp(vector<uint64_t> data) : data(data)
+            Fp(const array<uint64_t, 4UL>& data) : data(data)
             {
             }
 
@@ -355,7 +356,7 @@ namespace zeosio
                 return R;
             }
 
-            static Fp from_raw(vector<uint64_t> v)
+            static Fp from_raw(const array<uint64_t, 4UL>& v)
             {
                 return Fp(v).mul(R2);
             }
@@ -368,6 +369,49 @@ namespace zeosio
                 return Fp({val, 0, 0, 0}) * R2;
             }
 
+            Fp square() const
+            {
+                uint64_t _, r0, r1, r2, r3, r4, r5, r6, r7, carry;
+                tie(r1, carry) = mac(0, this->data[0], this->data[1], 0);
+                tie(r2, carry) = mac(0, this->data[0], this->data[2], carry);
+                tie(r3, r4)    = mac(0, this->data[0], this->data[3], carry);
+
+                tie(r3, carry) = mac(r3, this->data[1], this->data[2], 0);
+                tie(r4, r5)    = mac(r4, this->data[1], this->data[3], carry);
+
+                tie(r5, r6)    = mac(r5, this->data[2], this->data[3], 0);
+
+                r7 = r6 >> 63;
+                r6 = (r6 << 1) | (r5 >> 63);
+                r5 = (r5 << 1) | (r4 >> 63);
+                r4 = (r4 << 1) | (r3 >> 63);
+                r3 = (r3 << 1) | (r2 >> 63);
+                r2 = (r2 << 1) | (r1 >> 63);
+                r1 = r1 << 1;
+
+                tie(r0, carry) = mac(0, this->data[0], this->data[0], 0);
+                tie(r1, carry) = adc(0, r1, carry);
+                tie(r2, carry) = mac(r2, this->data[1], this->data[1], carry);
+                tie(r3, carry) = adc(0, r3, carry);
+                tie(r4, carry) = mac(r4, this->data[2], this->data[2], carry);
+                tie(r5, carry) = adc(0, r5, carry);
+                tie(r6, carry) = mac(r6, this->data[3], this->data[3], carry);
+                tie(r7, _)     = adc(0, r7, carry);
+
+                return montgomery_reduce(r0, r1, r2, r3, r4, r5, r6, r7);
+            }
+            Fp add(const Fp& rhs) const
+            {
+                uint64_t _, d0, d1, d2, d3, borrow, carry;
+                tie(d0, carry) = adc(this->data[0], rhs.data[0], 0);
+                tie(d1, carry) = adc(this->data[1], rhs.data[1], carry);
+                tie(d2, carry) = adc(this->data[2], rhs.data[2], carry);
+                tie(d3, _)     = adc(this->data[3], rhs.data[3], carry);
+
+                // Attempt to subtract the modulus, to ensure the value
+                // is smaller than the modulus.
+                return Fp({d0, d1, d2, d3}).sub(MODULUS);
+            }
             Fp sub(const Fp& rhs) const
             {
                 uint64_t _, d0, d1, d2, d3, borrow, carry;
@@ -457,9 +501,63 @@ namespace zeosio
                 return (Fp({rr4, rr5, rr6, rr7})).sub(MODULUS);
             };
 
+            Fp operator + (const Fp& rhs) const
+            {
+                return this->add(rhs);
+            }
+            Fp operator - (const Fp& rhs) const
+            {
+                return this->sub(rhs);
+            }
             Fp operator * (const Fp& rhs) const
             {
                 return this->mul(rhs);
+            }
+            bool operator== (const Fp &rhs) const
+            {
+                return this->data[0] == rhs.data[0] &&
+                       this->data[1] == rhs.data[1] &&
+                       this->data[2] == rhs.data[2] &&
+                       this->data[3] == rhs.data[3];
+            }
+            bool is_zero() const
+            {
+                return *this == Fp::zero();
+            }
+
+            /// Computes the multiplicative inverse of this element,
+            /// failing if the element is zero.
+            Fp invert() const
+            {
+                return this->pow_vartime<4>({
+                    0x992d30ecffffffff,
+                    0x224698fc094cf91b,
+                    0x0,
+                    0x4000000000000000,
+                });
+            }
+
+            template<size_t n> Fp pow_vartime(const array<uint64_t, n> exp) const
+            {
+                Fp res = Fp::one();
+                bool found_one = false;
+                for(int e = n-1; e >= 0; e--)
+                {
+                    for(int i = 63; i >= 0; i--)
+                    {
+                        if(found_one)
+                        {
+                            res = res.square();
+                        }
+
+                        if(((exp[e] >> i) & 1) == 1)
+                        {
+                            found_one = true;
+                            res = res * *this;
+                        }
+                    }
+                }
+                return res;
             }
         };
 
@@ -486,6 +584,323 @@ namespace zeosio
             0x0000000000000000,
             0x4000000000000000,
         });
+
+        class Ep;
+
+        class EpAffine
+        {
+            public:
+
+            Fp x;
+            Fp y;
+
+            EpAffine() : x(Fp::zero()), y(Fp::zero())
+            {
+            }
+
+            EpAffine(const Fp& x, const Fp& y) : x(x), y(y)
+            {
+            }
+
+            static EpAffine identity()
+            {
+                return EpAffine();
+            }
+
+            bool is_identity() const
+            {
+                return this->x.is_zero() && this->y.is_zero();
+            }
+
+            Ep to_curve() const;
+        };
+
+        class Ep
+        {
+            public:
+
+            /// HashDomain Q for Sinsemilla hash function. This constant is created from the
+            /// initializer string halo2_gadgets::sinsemilla::primitives::Q_PERSONALIZATION = "z.cash:SinsemillaQ"
+            /// see primitives.rs: line 129
+            static const Ep Q;
+
+            Fp x;
+            Fp y;
+            Fp z;
+
+            Ep() : x(Fp::zero()), y(Fp::zero()), z(Fp::zero())
+            {
+            }
+
+            Ep(const Fp& x, const Fp& y, const Fp& z) : x(x), y(y), z(z)
+            {
+            }
+
+            static Ep identity()
+            {
+                return Ep();
+            }
+
+            bool is_identity() const
+            {
+                return this->z.is_zero();
+            }
+
+            // rename 'double()' to 'dbl()' to avoid name conflict with primitive c++ type
+            Ep dbl() const
+            {
+                // http://www.hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-0.html#doubling-dbl-2009-l
+                //
+                // There are no points of order 2.
+
+                if(this->is_identity())
+                {
+                    return Ep::identity();
+                }
+
+                Fp a = this->x.square();
+                Fp b = this->y.square();
+                Fp c = b.square();
+                Fp d = this->x + b;
+                   d = d.square();
+                   d = d - a - c;
+                   d = d + d;
+                Fp e = a + a + a;
+                Fp f = e.square();
+                Fp z3 = this->z * this->y;
+                   z3 = z3 + z3;
+                Fp x3 = f - (d + d);
+                   c = c + c;
+                   c = c + c;
+                   c = c + c;
+                Fp y3 = e * (d - x3) - c;
+
+                return Ep(x3, y3, z3);
+            }
+            Ep add(const Ep& rhs) const
+            {
+                if(this->is_identity())
+                {
+                    return rhs;
+                }
+                else if(rhs.is_identity())
+                {
+                    return *this;
+                }
+                else
+                {
+                    Fp z1z1 = this->z.square();
+                    Fp z2z2 = rhs.z.square();
+                    Fp u1 = this->x * z2z2;
+                    Fp u2 = rhs.x * z1z1;
+                    Fp s1 = this->y * z2z2 * rhs.z;
+                    Fp s2 = rhs.y * z1z1 * this->z;
+
+                    if(u1 == u2)
+                    {
+                        if(s1 == s2)
+                        {
+                            return this->dbl();
+                        }
+                        else
+                        {
+                            return Ep::identity();
+                        }
+                    }
+                    else
+                    {
+                        Fp h = u2 - u1;
+                        Fp i = (h + h).square();
+                        Fp j = h * i;
+                        Fp r = s2 - s1;
+                           r = r + r;
+                        Fp v = u1 * i;
+                        Fp x3 = r.square() - j - v - v;
+                           s1 = s1 * j;
+                           s1 = s1 + s1;
+                        Fp y3 = r * (v - x3) - s1;
+                        Fp z3 = (this->z + rhs.z).square() - z1z1 - z2z2;
+                           z3 = z3 * h;
+
+                        return Ep(x3, y3, z3);
+                    }
+                }
+            }
+            Ep add(const EpAffine& rhs) const
+            {
+                if(this->is_identity())
+                {
+                    return rhs.to_curve();
+                }
+                else if(rhs.is_identity())
+                {
+                    return *this;
+                }
+                else
+                {
+                    Fp z1z1 = this->z.square();
+                    Fp u2 = rhs.x * z1z1;
+                    Fp s2 = rhs.y * z1z1 * this->z;
+
+                    if(this->x == u2)
+                    {
+                        if(this->y == s2)
+                        {
+                            return this->dbl();
+                        }
+                        else
+                        {
+                            return Ep::identity();
+                        }
+                    }
+                    else
+                    {
+                        Fp h = u2 - this->x;
+                        Fp hh = h.square();
+                        Fp i = hh + hh;
+                           i = i + i;
+                        Fp j = h * i;
+                        Fp r = s2 - this->y;
+                           r = r + r;
+                        Fp v = this->x * i;
+                        Fp x3 = r.square() - j - v - v;
+                           j = this->y * j;
+                           j = j + j;
+                        Fp y3 = r * (v - x3) - j;
+                        Fp z3 = (this->z + h).square() - z1z1 - hh;
+
+                        return Ep(x3, y3, z3);
+                    }
+                }
+            }
+    
+            Ep operator + (const Ep& rhs) const
+            {
+                return this->add(rhs);
+            }
+            Ep operator + (const EpAffine& rhs) const
+            {
+                return this->add(rhs);
+            }
+
+            EpAffine to_affine() const
+            {
+                Fp zinv = this->z.invert();
+                Fp zinv2 = zinv.square();
+                Fp x = this->x * zinv2;
+                Fp zinv3 = zinv2 * zinv;
+                Fp y = this->y * zinv3;
+
+                if(zinv.is_zero())
+                {
+                    return EpAffine::identity();
+                }
+                else
+                {
+                    return EpAffine(x, y);
+                }
+            }
+        };
+
+        Ep EpAffine::to_curve() const
+        {
+            return Ep(
+                this->x,
+                this->y,
+                this->is_identity() ? Fp::zero() : Fp::one()
+            );
+        }
+
+        /// HashDomain Q for Sinsemilla hash function. This constant is created from the
+        /// initializer string halo2_gadgets::sinsemilla::primitives::Q_PERSONALIZATION = "z.cash:SinsemillaQ"
+        /// see primitives.rs: line 129
+        const Ep Ep::Q = Ep(
+            Fp({0x67B76299266CB8D4, 0xD0D128C329E581C0, 0x6244657A3F4F6094, 0x0D43CFCDAE22562B}),
+            Fp({0xBE93D15A29027311, 0xBDC9E25C08B4AB5B, 0xC0FBDB629781BA9A, 0x284D126C4C96B56C}),
+            Fp({0xF24E7313E8A108F1, 0x3A1046C9E8EF2B9A, 0x49956F05DFCA8041, 0x0B57E97EF8C4E060})
+        );
+
+        // helper macro to update state of sinsemilla hash function
+        #define MERKLE_HASH_UPDATE(chunk) \
+            tie(S_x, S_y) = SINSEMILLA_S[(chunk)]; \
+            S_chunk = EpAffine(Fp::from_raw(S_x), Fp::from_raw(S_y)); \
+            acc = (acc + S_chunk) + acc; 
+
+        /// Implements `MerkleCRH^Orchard` as defined in
+        /// <https://zips.z.cash/protocol/protocol.pdf#orchardmerklecrh>
+        ///
+        /// The layer with 2^n nodes is called "layer n":
+        ///      - leaves are at layer MERKLE_DEPTH_ORCHARD = 32;
+        ///      - the root is at layer 0.
+        /// `l` is MERKLE_DEPTH_ORCHARD - layer - 1.
+        ///      - when hashing two leaves, we produce a node on the layer above the leaves, i.e.
+        ///        layer = 31, l = 0
+        ///      - when hashing to the final root, we produce the anchor with layer = 0, l = 31.
+        Fp sinsemilla_combine(const uint64_t& altitude, const Fp& left, const Fp& right)
+        {
+            Fp l = left.montgomery_reduce(left.data[0], left.data[1], left.data[2], left.data[3], 0, 0, 0, 0);
+            Fp r = left.montgomery_reduce(right.data[0], right.data[1], right.data[2], right.data[3], 0, 0, 0, 0);
+
+            Ep acc = Ep::Q;
+            array<uint64_t, 4> S_x, S_y;
+            EpAffine S_chunk;
+
+            MERKLE_HASH_UPDATE(altitude & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[0] >>  0 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[0] >> 10 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[0] >> 20 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[0] >> 30 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[0] >> 40 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[0] >> 50 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[1] <<  4 & 0x3F0 | l.data[0] >> 60 & 0xF)
+            MERKLE_HASH_UPDATE(l.data[1] >>  6 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[1] >> 16 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[1] >> 26 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[1] >> 36 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[1] >> 46 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[2] <<  8 & 0x300 | l.data[1] >> 56 & 0xFF)
+            MERKLE_HASH_UPDATE(l.data[2] >>  2 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[2] >> 12 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[2] >> 22 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[2] >> 32 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[2] >> 42 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[2] >> 52 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[3] <<  2 & 0x3FC | l.data[2] >> 62 & 0x003)
+            MERKLE_HASH_UPDATE(l.data[3] >>  8 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[3] >> 18 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[3] >> 28 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[3] >> 38 & 0x3FF)
+            MERKLE_HASH_UPDATE(l.data[3] >> 48 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[0] <<  5 & 0x3E0 | l.data[3] >> 58 & 0x01F)   // cut off bit 256 of 'l'
+            MERKLE_HASH_UPDATE(r.data[0] >>  5 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[0] >> 15 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[0] >> 25 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[0] >> 35 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[0] >> 45 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[1] <<  9 & 0x200 | r.data[0] >> 55 & 0x1FF)
+            MERKLE_HASH_UPDATE(r.data[1] >>  1 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[1] >> 11 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[1] >> 21 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[1] >> 31 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[1] >> 41 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[1] >> 51 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[2] <<  3 & 0x3F8 | r.data[1] >> 61 & 0x007)
+            MERKLE_HASH_UPDATE(r.data[2] >>  7 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[2] >> 17 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[2] >> 27 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[2] >> 37 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[2] >> 47 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[3] <<  7 & 0x380 | r.data[2] >> 57 & 0x07F)
+            MERKLE_HASH_UPDATE(r.data[3] >>  3 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[3] >> 13 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[3] >> 23 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[3] >> 33 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[3] >> 43 & 0x3FF)
+            MERKLE_HASH_UPDATE(r.data[3] >> 53 & 0x3FF)
+            // MERKLE_HASH_UPDATE(r.data[3] >> 63 & 0x001) not needed because bit 256 of 'r' is cut off
+
+            return acc.to_affine().x;
+        }
 
         struct instance
         {
@@ -566,9 +981,17 @@ struct zinstance : halo2::instance
 };
 
 // ZEOS action types
-#define ZA_DUMMY    0xDEADBEEFDEADBEEF  // dummy action that indicates zactions to be validated/executed
-#define ZA_NULL     0x0                 // NULL OP - do nothing (verify proof only)
-#define ZA_         0x1                 // ... TODO
+#define ZA_DUMMY        0xDEADBEEFDEADBEEF  // dummy action that indicates zactions to be validated/executed
+#define ZA_NULL         0x0                 // NULL OP - do nothing (verify proof only)
+#define ZA_MINTFT       0x1
+#define ZA_MINTNFT      0x2
+#define ZA_MINTAUTH     0x3
+#define ZA_TRANSFERFT   0x4
+#define ZA_TRANSFERNFT  0x5
+#define ZA_BURNFT       0x6
+#define ZA_BURNFT2      0x7
+#define ZA_BURNNFT      0x8
+#define ZA_BURNAUTH     0x9
 
 // size of zinstances in num of bytes
 #define ZI_SIZE         (32 + 32 + 32 + 32 + 1 + 8 + 8 + 8 + 8 + 32 + 32)
