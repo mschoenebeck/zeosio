@@ -346,6 +346,12 @@ namespace zeosio
             Fp(const array<uint64_t, 4UL>& data) : data(data)
             {
             }
+            Fp(const checksum256& cs) : data()
+            {
+                // convert big-endian checksum type to little-endian Fp type which is used for merkle nodes
+                array<uint8_t, 32UL> ba = cs.extract_as_byte_array();
+                mempcpy(this->data.data(), ba.data(), 32);
+            }
 
             static Fp zero()
             {

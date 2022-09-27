@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <tuple>
 using namespace std;
 
 #define K 10
