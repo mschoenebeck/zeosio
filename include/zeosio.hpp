@@ -5,7 +5,6 @@
 #include <array>
 #include <eosio/eosio.hpp>
 #include "blake2s.h"
-#include "sinsemilla_s.h"
 
 using namespace std;
 using namespace eosio;
@@ -348,7 +347,8 @@ namespace zeosio
             }
             Fp(const checksum256& cs) : data()
             {
-                // convert big-endian checksum type to little-endian Fp type which is used for merkle nodes
+                // convert big-endian checksum type to little-endian Fp type
+                // which is used for merkle path calculation
                 array<uint8_t, 32UL> ba = cs.extract_as_byte_array();
                 mempcpy(this->data.data(), ba.data(), 32);
             }
@@ -365,6 +365,10 @@ namespace zeosio
             static Fp from_raw(const array<uint64_t, 4UL>& v)
             {
                 return Fp(v).mul(R2);
+            }
+            static Fp from_raw(const uint64_t& d0, const uint64_t& d1, const uint64_t& d2, const uint64_t& d3)
+            {
+                return Fp({d0, d1, d2, d3}).mul(R2);
             }
             static Fp from_bool(const bool& bit)
             {
@@ -826,88 +830,6 @@ namespace zeosio
             Fp({0xF24E7313E8A108F1, 0x3A1046C9E8EF2B9A, 0x49956F05DFCA8041, 0x0B57E97EF8C4E060})
         );
 
-        // helper macro to update state of sinsemilla hash function
-        #define MERKLE_HASH_UPDATE(chunk) \
-            tie(S_x, S_y) = SINSEMILLA_S[(chunk)]; \
-            S_chunk = EpAffine(Fp::from_raw(S_x), Fp::from_raw(S_y)); \
-            acc = (acc + S_chunk) + acc; 
-
-        /// Implements `MerkleCRH^Orchard` as defined in
-        /// <https://zips.z.cash/protocol/protocol.pdf#orchardmerklecrh>
-        ///
-        /// The layer with 2^n nodes is called "layer n":
-        ///      - leaves are at layer MERKLE_DEPTH_ORCHARD = 32;
-        ///      - the root is at layer 0.
-        /// `l` is MERKLE_DEPTH_ORCHARD - layer - 1.
-        ///      - when hashing two leaves, we produce a node on the layer above the leaves, i.e.
-        ///        layer = 31, l = 0
-        ///      - when hashing to the final root, we produce the anchor with layer = 0, l = 31.
-        Fp sinsemilla_combine(const uint64_t& altitude, const Fp& left, const Fp& right)
-        {
-            Fp l = left.montgomery_reduce(left.data[0], left.data[1], left.data[2], left.data[3], 0, 0, 0, 0);
-            Fp r = left.montgomery_reduce(right.data[0], right.data[1], right.data[2], right.data[3], 0, 0, 0, 0);
-
-            Ep acc = Ep::Q;
-            array<uint64_t, 4> S_x, S_y;
-            EpAffine S_chunk;
-
-            MERKLE_HASH_UPDATE(altitude & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[0] >>  0 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[0] >> 10 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[0] >> 20 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[0] >> 30 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[0] >> 40 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[0] >> 50 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[1] <<  4 & 0x3F0 | l.data[0] >> 60 & 0xF)
-            MERKLE_HASH_UPDATE(l.data[1] >>  6 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[1] >> 16 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[1] >> 26 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[1] >> 36 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[1] >> 46 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[2] <<  8 & 0x300 | l.data[1] >> 56 & 0xFF)
-            MERKLE_HASH_UPDATE(l.data[2] >>  2 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[2] >> 12 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[2] >> 22 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[2] >> 32 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[2] >> 42 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[2] >> 52 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[3] <<  2 & 0x3FC | l.data[2] >> 62 & 0x003)
-            MERKLE_HASH_UPDATE(l.data[3] >>  8 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[3] >> 18 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[3] >> 28 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[3] >> 38 & 0x3FF)
-            MERKLE_HASH_UPDATE(l.data[3] >> 48 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[0] <<  5 & 0x3E0 | l.data[3] >> 58 & 0x01F)   // cut off bit 256 of 'l'
-            MERKLE_HASH_UPDATE(r.data[0] >>  5 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[0] >> 15 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[0] >> 25 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[0] >> 35 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[0] >> 45 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[1] <<  9 & 0x200 | r.data[0] >> 55 & 0x1FF)
-            MERKLE_HASH_UPDATE(r.data[1] >>  1 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[1] >> 11 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[1] >> 21 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[1] >> 31 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[1] >> 41 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[1] >> 51 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[2] <<  3 & 0x3F8 | r.data[1] >> 61 & 0x007)
-            MERKLE_HASH_UPDATE(r.data[2] >>  7 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[2] >> 17 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[2] >> 27 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[2] >> 37 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[2] >> 47 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[3] <<  7 & 0x380 | r.data[2] >> 57 & 0x07F)
-            MERKLE_HASH_UPDATE(r.data[3] >>  3 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[3] >> 13 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[3] >> 23 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[3] >> 33 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[3] >> 43 & 0x3FF)
-            MERKLE_HASH_UPDATE(r.data[3] >> 53 & 0x3FF)
-            // MERKLE_HASH_UPDATE(r.data[3] >> 63 & 0x001) not needed because bit 256 of 'r' is cut off
-
-            return acc.to_affine().x;
-        }
-
         struct instance
         {
             virtual vector<Fp> to_halo2_instance() const = 0;
@@ -1000,7 +922,7 @@ struct zinstance : halo2::instance
 #define ZA_BURNAUTH     0x9
 
 // size of zinstances in num of bytes
-#define ZI_SIZE         (32 + 32 + 32 + 32 + 1 + 8 + 8 + 8 + 8 + 32 + 32)
+#define ZI_SIZE (32 + 32 + 32 + 32 + 1 + 8 + 8 + 8 + 8 + 32 + 32)
 
 struct zaction
 {
