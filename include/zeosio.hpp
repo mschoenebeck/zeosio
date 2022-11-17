@@ -879,6 +879,8 @@ struct zinstance : halo2::instance
     uint64_t c_d1;
     checksum256 cmb;
     checksum256 cmc;
+    uint64_t accb;
+    uint64_t accc;
 
     vector<halo2::Fp> to_halo2_instance() const
     {
@@ -902,10 +904,12 @@ struct zinstance : halo2::instance
         vec.push_back(halo2::Fp({*(uint64_t*)&ba[0], *(uint64_t*)&ba[8], *(uint64_t*)&ba[16], *(uint64_t*)&ba[24]}));
         ba = cmc.extract_as_byte_array();
         vec.push_back(halo2::Fp({*(uint64_t*)&ba[0], *(uint64_t*)&ba[8], *(uint64_t*)&ba[16], *(uint64_t*)&ba[24]}));
+        vec.push_back(halo2::Fp::from_u64(accb));
+        vec.push_back(halo2::Fp::from_u64(accc));
         return vec;
     }
 
-    EOSLIB_SERIALIZE(zinstance, (anchor)(nf)(rk_x)(rk_y)(nft)(b_d1)(b_d2)(b_sc)(c_d1)(cmb)(cmc))
+    EOSLIB_SERIALIZE(zinstance, (anchor)(nf)(rk_x)(rk_y)(nft)(b_d1)(b_d2)(b_sc)(c_d1)(cmb)(cmc)(accb)(accc))
 };
 
 // ZEOS action types
@@ -922,7 +926,7 @@ struct zinstance : halo2::instance
 #define ZA_BURNAUTH     0x9
 
 // size of zinstances in num of bytes
-#define ZI_SIZE (32 + 32 + 32 + 32 + 1 + 8 + 8 + 8 + 8 + 32 + 32)
+#define ZI_SIZE (32 + 32 + 32 + 32 + 1 + 8 + 8 + 8 + 8 + 32 + 32 + 8 + 8)
 
 struct zaction
 {
